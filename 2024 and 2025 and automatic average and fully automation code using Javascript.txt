@@ -1,0 +1,222 @@
+2024 and 2025 and automatic average fully automation code-
+
+// Main function that runs when triggered
+function updateData() {
+  try {
+    Logger.log("Starting complete data update process...");
+    
+    // Get the current date and time
+    const now = new Date();
+    const oneYearAgo = new Date(now);
+    oneYearAgo.setFullYear(now.getFullYear() - 1);
+    
+    // Fetch data for both years
+    const data2024 = fetchYearData(2024);
+    const data2025 = fetchYearData(2025);
+    
+    // Create combined rolling year data
+    createCombinedData(data2024, data2025, oneYearAgo, now);
+    
+    Logger.log("Complete data update process finished successfully");
+  } catch (error) {
+    Logger.log("Error in update process: " + error.toString());
+  }
+}
+
+// Function to fetch data for a specific year
+function fetchYearData(year) {
+  try {
+    const url = `https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_lmp_da_hr_zones_${year}.csv`;
+    const response = UrlFetchApp.fetch(url);
+    const csvData = response.getContentText();
+    
+    // Parse the CSV data
+    const rows = Utilities.parseCsv(csvData);
+    const filteredRows = rows.slice(3); // Skip the first 3 rows
+    
+    // Update the year's Data sheet
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheetName = `${year} Data`;
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+    } else {
+      sheet.clear();
+    }
+    
+    // Write the data
+    sheet.getRange(1, 1, filteredRows.length, filteredRows[0].length).setValues(filteredRows);
+    Logger.log(`${year} Data fetched and updated successfully`);
+    
+    return filteredRows;
+  } catch (error) {
+    Logger.log(`Error processing ${year} data: ${error.toString()}`);
+    return [];
+  }
+}
+
+// Function to parse dates
+function parseDate(dateTimeStr) {
+  try {
+    if (!dateTimeStr || typeof dateTimeStr !== 'string') return null;
+    
+    // Expected format: YYYY-MM-DD HH:MM:SS
+    const parts = dateTimeStr.split(' ');
+    if (parts.length !== 2) return null;
+    
+    const dateParts = parts[0].split('-');
+    const timeParts = parts[1].split(':');
+    
+    if (dateParts.length !== 3 || timeParts.length !== 3) return null;
+    
+    return new Date(
+      parseInt(dateParts[0]), 
+      parseInt(dateParts[1]) - 1, // Month is 0-indexed
+      parseInt(dateParts[2]),
+      parseInt(timeParts[0]),
+      parseInt(timeParts[1]),
+      parseInt(timeParts[2])
+    );
+  } catch (e) {
+    Logger.log("Error parsing date: " + dateTimeStr);
+    return null;
+  }
+}
+
+// Function to create combined data sheet with rolling year data
+function createCombinedData(data2024, data2025, oneYearAgo, now) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let combinedSheet = ss.getSheetByName("Combined Data");
+  if (!combinedSheet) {
+    combinedSheet = ss.insertSheet("Combined Data");
+  } else {
+    combinedSheet.clear();
+  }
+  
+  const rollingYearData = [];
+  
+  // Check if we have valid data sets
+  if ((data2024.length > 0 || data2025.length > 0)) {
+    // Determine which dataset to use for headers
+    const headerRow = data2025.length > 0 ? data2025[0] : data2024[0];
+    rollingYearData.push(headerRow);
+    
+    // Combine data from both years
+    const allRows = [];
+    if (data2024.length > 1) {
+      allRows.push(...data2024.slice(1)); // Skip header
+    }
+    if (data2025.length > 1) {
+      allRows.push(...data2025.slice(1)); // Skip header
+    }
+    
+    // Filter for the rolling year period
+    for (let i = 0; i < allRows.length; i++) {
+      const row = allRows[i];
+      if (!row[0]) continue;
+      
+      const rowDate = parseDate(row[0]);
+      if (rowDate && rowDate >= oneYearAgo && rowDate <= now) {
+        rollingYearData.push(row);
+      }
+    }
+    
+    // Sort data chronologically
+    rollingYearData.sort((a, b) => {
+      if (a[0] === headerRow[0]) return -1; // Keep header row at top
+      if (b[0] === headerRow[0]) return 1;  // Keep header row at top
+      
+      const dateA = parseDate(a[0]);
+      const dateB = parseDate(b[0]);
+      
+      if (!dateA) return -1;
+      if (!dateB) return 1;
+      
+      return dateA - dateB;
+    });
+    
+    // Write data to combined sheet
+    if (rollingYearData.length > 0) {
+      combinedSheet.getRange(1, 1, rollingYearData.length, rollingYearData[0].length).setValues(rollingYearData);
+      Logger.log("Combined rolling year data written successfully");
+      
+      // Calculate averages
+      calculateAverages(combinedSheet, rollingYearData);
+    }
+  } else {
+    Logger.log("Warning: No data available for either 2024 or 2025.");
+  }
+}
+
+// Function to calculate averages
+function calculateAverages(combinedSheet, rollingYearData) {
+  if (rollingYearData.length > 1) {
+    const headerRow = rollingYearData[0];
+    const utilityStartIndex = 1; // Assuming date is in column 0 and utilities start at column 1
+    
+    // Calculate averages for each utility
+    const averages = [];
+    for (let col = utilityStartIndex; col < headerRow.length; col++) {
+      let sum = 0;
+      let count = 0;
+      
+      for (let row = 1; row < rollingYearData.length; row++) {
+        const value = rollingYearData[row][col];
+        if (value !== undefined && value !== null && !isNaN(parseFloat(value))) {
+          sum += parseFloat(value);
+          count++;
+        }
+      }
+      
+      const average = count > 0 ? sum / count : 0;
+      averages.push(average);
+    }
+    
+    // Write averages row
+    const lastRow = rollingYearData.length + 1;
+    combinedSheet.getRange(lastRow, 1).setValue("AVERAGE");
+    
+    // Write the averages
+    for (let i = 0; i < averages.length; i++) {
+      combinedSheet.getRange(lastRow, i + utilityStartIndex + 1).setValue(averages[i]);
+    }
+    
+    // Format the averages row with light sky blue background
+    const averagesRow = combinedSheet.getRange(lastRow, 1, 1, headerRow.length);
+    averagesRow.setFontWeight("bold");
+    averagesRow.setNumberFormat("#,##0.00");
+    averagesRow.setBackground("#87CEFA"); // Light sky blue color
+    
+    Logger.log("Averages calculated and formatted with light sky blue background");
+  }
+}
+
+// Set up triggers to run every 12 hours
+function setupTriggers() {
+  // Delete any existing triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  for (let i = 0; i < triggers.length; i++) {
+    ScriptApp.deleteTrigger(triggers[i]);
+  }
+  
+  // Create two new triggers to run at 5am and 5pm
+  ScriptApp.newTrigger("updateData")
+    .timeBased()
+    .everyDays(1)
+    .atHour(5) // Run at 5am
+    .create();
+  
+  ScriptApp.newTrigger("updateData")
+    .timeBased()
+    .everyDays(1)
+    .atHour(17) // Run at 5pm (17:00)
+    .create();
+  
+  Logger.log("12-hour triggers set up successfully to run at 5am and 5pm.");
+}
+
+// Run this function to set everything up
+function initialize() {
+  setupTriggers();
+  updateData();
+}
